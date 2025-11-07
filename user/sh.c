@@ -15,6 +15,40 @@
 
 int jobs[NPROC] = {0};
 
+void add_job(int pid){
+  for (int i=0; i<NPROC; i++){
+    if(!jobs[i]){
+      jobs[i] = pid;
+      break;
+    }
+  }
+}
+
+void remove_job(int pid){
+  for(int i=0;i<NPROC;i++){
+    if(jobs[i]==pid){
+      jobs[i] = 0;
+      break;
+    }
+  }
+}
+
+void print_jobs(){
+  for(int i=0;i<NPROC;i++){
+    if(jobs[i]){
+      printf("%d\n", jobs[i]);
+    }
+  }
+}
+
+void reap_jobs(){
+  int status, pid;
+  while((pid=wait_noblock((uint64)&status))>0){
+    remove_job(pid);
+    printf("[bg %d] exited with status %d\n", pid, status);
+  }
+}
+
 struct cmd {
   int type;
 };
@@ -129,8 +163,11 @@ runcmd(struct cmd *cmd)
     int pid = fork1();
     if(!pid)
       runcmd(bcmd->cmd);
-    else
+    else{
       add_job(pid);
+      printf("[%d]\n", pid);
+      exit(0);
+    }
     break;
   }
   exit(0);
@@ -147,13 +184,11 @@ getcmd(char *buf, int nbuf)
   return 0;
 }
 
-int
-main(int argc, char* argv[])
+int main(int argc, char* argv[])
 {
   static char buf[100];
   int fd;
 
-  // Ensure that three file descriptors are open.
   while((fd = open("console", O_RDWR)) >= 0){
     if(fd >= 3){
       close(fd);
@@ -161,25 +196,73 @@ main(int argc, char* argv[])
     }
   }
 
-  // Read and run input commands.
-  while(getcmd(buf, sizeof(buf)) >= 0){
+  if(argc > 1){
+    fd = open(argv[1], O_RDONLY);
+    if(fd < 0){
+      fprintf(2, "sh: cannot open %s\n", argv[1]);
+      exit(1);
+    }
+    int i = 0;
+    char c;
+    while(read(fd, &c, 1) == 1){
+      if(c == '\n' || i >= sizeof(buf)-1){
+        buf[i] = 0;
+        reap_jobs();
+        if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+          buf[strlen(buf)-1] = 0;
+          if(chdir(buf+3) < 0)
+            fprintf(2, "cannot cd %s\n", buf+3);
+        }else if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
+          print_jobs();
+        }else if(buf[0]){
+          runcmd(parsecmd(buf));
+          wait(0);
+        }
+        i = 0;
+      }else{
+        buf[i++] = c;
+      }
+    }
+
+    // For last row with no \n
+    buf[i] = 0;
+    if(i > 0 && buf[0]) {
+        reap_jobs();
+        if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+            buf[strlen(buf)-1] = 0;
+            if(chdir(buf+3) < 0)
+                fprintf(2, "cannot cd %s\n", buf+3);
+        }else if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
+            print_jobs();
+        }else{
+            runcmd(parsecmd(buf));
+            wait(0);
+        }
+    }
+    close(fd);
+    reap_jobs();
+    exit(0);
+  }
+  while(1){
+    reap_jobs();
+    if(getcmd(buf, sizeof(buf)) < 0) break;
+    reap_jobs();
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      buf[strlen(buf)-1] = 0;  // chop \n
+      buf[strlen(buf)-1] = 0;
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    if(!strncmp(buf, "jobs", 4) && (buf[4]=='\n' || buf[4]==0)){
+    if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
       print_jobs();
       continue;
     }
-    if(fork1() == 0)
-      runcmd(parsecmd(buf));
+    runcmd(parsecmd(buf));
     wait(0);
   }
   exit(0);
 }
+
 
 void
 panic(char *s)
@@ -500,37 +583,4 @@ nulterminate(struct cmd *cmd)
     break;
   }
   return cmd;
-}
-
-void add_job(int pid){
-  for (int i=0; i<NPROC; i++){
-    if(!jobs[i]){
-      jobs[i] = pid;
-      break;
-    }
-  }
-}
-
-void remove_job(int pid){
-  for(int i=0;i<NPROC;i++){
-    if(jobs[i]==pid){
-      jobs[i] = 0;
-      break;
-    }
-  }
-}
-
-void print_jobs(){
-  for(int i=0;i<NPROC;i++){
-    if(jobs[i]){
-      printf("%d\n", jobs[i]);
-    }
-  }
-}
-
-void reap_jobs(){
-  int status, pid;
-  while((pid=wait_noblock(&status))>0){
-    remove_job(pid);
-  }
 }
