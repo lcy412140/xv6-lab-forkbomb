@@ -1,5 +1,4 @@
 // Shell.
-
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
@@ -13,6 +12,8 @@
 #define BACK  5
 
 #define MAXARGS 10
+
+int jobs[NPROC] = {0};
 
 struct cmd {
   int type;
@@ -125,8 +126,11 @@ runcmd(struct cmd *cmd)
 
   case BACK:
     bcmd = (struct backcmd*)cmd;
-    if(fork1() == 0)
+    int pid = fork1();
+    if(!pid)
       runcmd(bcmd->cmd);
+    else
+      add_job(pid);
     break;
   }
   exit(0);
@@ -144,7 +148,7 @@ getcmd(char *buf, int nbuf)
 }
 
 int
-main(void)
+main(int argc, char* argv[])
 {
   static char buf[100];
   int fd;
@@ -164,6 +168,10 @@ main(void)
       buf[strlen(buf)-1] = 0;  // chop \n
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
+      continue;
+    }
+    if(!strncmp(buf, "jobs", 4) && (buf[4]=='\n' || buf[4]==0)){
+      print_jobs();
       continue;
     }
     if(fork1() == 0)
@@ -492,4 +500,37 @@ nulterminate(struct cmd *cmd)
     break;
   }
   return cmd;
+}
+
+void add_job(int pid){
+  for (int i=0; i<NPROC; i++){
+    if(!jobs[i]){
+      jobs[i] = pid;
+      break;
+    }
+  }
+}
+
+void remove_job(int pid){
+  for(int i=0;i<NPROC;i++){
+    if(jobs[i]==pid){
+      jobs[i] = 0;
+      break;
+    }
+  }
+}
+
+void print_jobs(){
+  for(int i=0;i<NPROC;i++){
+    if(jobs[i]){
+      printf("%d\n", jobs[i]);
+    }
+  }
+}
+
+void reap_jobs(){
+  int status, pid;
+  while((pid=wait_noblock(&status))>0){
+    remove_job(pid);
+  }
 }
