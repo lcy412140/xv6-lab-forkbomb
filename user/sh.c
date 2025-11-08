@@ -128,9 +128,7 @@ runcmd(struct cmd *cmd)
 
   case LIST:
     lcmd = (struct listcmd*)cmd;
-    if(fork1() == 0)
-      runcmd(lcmd->left);
-    wait(0);
+    runcmd(lcmd->left);
     runcmd(lcmd->right);
     break;
 
@@ -138,40 +136,27 @@ runcmd(struct cmd *cmd)
     pcmd = (struct pipecmd*)cmd;
     if(pipe(p) < 0)
       panic("pipe");
-    if(fork1() == 0){
-      close(1);
-      dup(p[1]);
-      close(p[0]);
-      close(p[1]);
-      runcmd(pcmd->left);
-    }
-    if(fork1() == 0){
-      close(0);
-      dup(p[0]);
-      close(p[0]);
-      close(p[1]);
-      runcmd(pcmd->right);
-    }
+    close(1);
+    dup(p[1]);
     close(p[0]);
     close(p[1]);
-    wait(0);
-    wait(0);
+    runcmd(pcmd->left);
+
+    close(0);
+    dup(p[0]);
+    close(p[0]);
+    close(p[1]);
+    runcmd(pcmd->right);
     break;
 
   case BACK:
     bcmd = (struct backcmd*)cmd;
-    int pid = fork1();
-    if(!pid)
-      runcmd(bcmd->cmd);
-    else{
-      add_job(pid);
-      printf("[%d]\n", pid);
-      exit(0);
-    }
+    runcmd(bcmd->cmd);
     break;
   }
   exit(0);
 }
+
 
 int
 getcmd(char *buf, int nbuf)
@@ -244,22 +229,49 @@ int main(int argc, char* argv[])
     exit(0);
   }
   while(1){
-    reap_jobs();
+    reap_jobs();  // 非阻塞驅除 zombie。
     if(getcmd(buf, sizeof(buf)) < 0) break;
-    reap_jobs();
-    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+    reap_jobs();  // 印 prompt 前再清理 zombie。
+
+    // 內建命令 (cd + jobs)
+    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
       buf[strlen(buf)-1] = 0;
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
+    if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)) {
       print_jobs();
       continue;
     }
-    runcmd(parsecmd(buf));
-    wait(0);
+
+    struct cmd* c = parsecmd(buf);
+
+    int is_bg = 0;
+    if(c->type == BACK) is_bg = 1;
+
+    int pid = fork1();
+    if(pid == 0){
+      // child process直接執行命令
+      if(is_bg) {
+        struct backcmd* bcmd = (struct backcmd*)c;
+        runcmd(bcmd->cmd); // 只執行一層！不再 fork
+      } else {
+        runcmd(c);
+      }
+      exit(0);
+    }
+
+    if(is_bg){
+      add_job(pid);
+      printf("[%d]\n", pid);
+      // parent立即回 prompt，不 wait
+    } else {
+      wait(0);
+      // 前景命令，待child完成
+    }
   }
+
   exit(0);
 }
 
