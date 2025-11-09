@@ -15,40 +15,6 @@
 
 int jobs[NPROC] = {0};
 
-void add_job(int pid){
-  for (int i=0; i<NPROC; i++){
-    if(!jobs[i]){
-      jobs[i] = pid;
-      break;
-    }
-  }
-}
-
-void remove_job(int pid){
-  for(int i=0;i<NPROC;i++){
-    if(jobs[i]==pid){
-      jobs[i] = 0;
-      break;
-    }
-  }
-}
-
-void print_jobs(){
-  for(int i=0;i<NPROC;i++){
-    if(jobs[i]){
-      printf("%d\n", jobs[i]);
-    }
-  }
-}
-
-void reap_jobs(){
-  int status, pid;
-  while((pid=wait_noblock((uint64)&status))>0){
-    remove_job(pid);
-    printf("[bg %d] exited with status %d\n", pid, status);
-  }
-}
-
 struct cmd {
   int type;
 };
@@ -129,6 +95,7 @@ runcmd(struct cmd *cmd)
   case LIST:
     lcmd = (struct listcmd*)cmd;
     runcmd(lcmd->left);
+    wait(0);
     runcmd(lcmd->right);
     break;
 
@@ -136,17 +103,23 @@ runcmd(struct cmd *cmd)
     pcmd = (struct pipecmd*)cmd;
     if(pipe(p) < 0)
       panic("pipe");
+    
     close(1);
     dup(p[1]);
     close(p[0]);
     close(p[1]);
     runcmd(pcmd->left);
-
+    
     close(0);
     dup(p[0]);
     close(p[0]);
     close(p[1]);
     runcmd(pcmd->right);
+    
+    close(p[0]);
+    close(p[1]);
+    wait(0);
+    wait(0);
     break;
 
   case BACK:
@@ -156,7 +129,6 @@ runcmd(struct cmd *cmd)
   }
   exit(0);
 }
-
 
 int
 getcmd(char *buf, int nbuf)
@@ -169,11 +141,13 @@ getcmd(char *buf, int nbuf)
   return 0;
 }
 
-int main(int argc, char* argv[])
+int
+main(void)
 {
   static char buf[100];
   int fd;
 
+  // Ensure that three file descriptors are open.
   while((fd = open("console", O_RDWR)) >= 0){
     if(fd >= 3){
       close(fd);
@@ -181,100 +155,60 @@ int main(int argc, char* argv[])
     }
   }
 
-  if(argc > 1){
-    fd = open(argv[1], O_RDONLY);
-    if(fd < 0){
-      fprintf(2, "sh: cannot open %s\n", argv[1]);
-      exit(1);
-    }
-    int i = 0;
-    char c;
-    while(read(fd, &c, 1) == 1){
-      if(c == '\n' || i >= sizeof(buf)-1){
-        buf[i] = 0;
-        reap_jobs();
-        if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-          buf[strlen(buf)-1] = 0;
-          if(chdir(buf+3) < 0)
-            fprintf(2, "cannot cd %s\n", buf+3);
-        }else if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
-          print_jobs();
-        }else if(buf[0]){
-          runcmd(parsecmd(buf));
-          wait(0);
-        }
-        i = 0;
-      }else{
-        buf[i++] = c;
-      }
-    }
-
-    // For last row with no \n
-    buf[i] = 0;
-    if(i > 0 && buf[0]) {
-        reap_jobs();
-        if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-            buf[strlen(buf)-1] = 0;
-            if(chdir(buf+3) < 0)
-                fprintf(2, "cannot cd %s\n", buf+3);
-        }else if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)){
-            print_jobs();
-        }else{
-            runcmd(parsecmd(buf));
-            wait(0);
-        }
-    }
-    close(fd);
-    reap_jobs();
-    exit(0);
+  // Reap background zonmbie processes (BEFORE).
+  int pid, status;
+  while ((pid = wait_noblock((uint64)&status)) > 0){
+    printf("[bg %d] exited with status %d\n", pid, status);
+    jobs[pid] = 0;
   }
-  while(1){
-    reap_jobs();  // 非阻塞驅除 zombie。
-    if(getcmd(buf, sizeof(buf)) < 0) break;
-    reap_jobs();  // 印 prompt 前再清理 zombie。
 
-    // 內建命令 (cd + jobs)
-    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
-      buf[strlen(buf)-1] = 0;
+  // Read and run input commands.
+  while(getcmd(buf, sizeof(buf)) >= 0){
+
+    // Reap again (AFTER).
+    while ((pid = wait_noblock((uint64)&status)) > 0){
+      printf("[bg %d] exited with status %d\n", pid, status);
+      jobs[pid] = 0;
+    }
+
+    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+      // Chdir must be called by the parent, not the child.
+      buf[strlen(buf)-1] = 0;  // chop \n
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
-    }
-    if(buf[0]=='j' && buf[1]=='o' && buf[2]=='b' && buf[3]=='s' && (buf[4]=='\n' || buf[4]==0)) {
-      print_jobs();
+    } else if(buf[0] == 'j' && buf[1] == 'o' && buf[2] == 'b' && buf[3] == 's' && (buf[4] == '\n' || buf[4] == 0)){
+      for(int i=0;i<NPROC;i++){
+        if(jobs[i]) printf("%d\n", i);
+      }
       continue;
     }
 
     struct cmd* c = parsecmd(buf);
-
-    int is_bg = 0;
-    if(c->type == BACK) is_bg = 1;
-
-    int pid = fork1();
-    if(pid == 0){
-      // child process直接執行命令
-      if(is_bg) {
+    int is_bg = (c->type == BACK);
+    pid = fork1(); // Only fork in main once.
+    
+    // For child process.
+    if(pid==0){ 
+      if(is_bg){
+        // Background command.
         struct backcmd* bcmd = (struct backcmd*)c;
-        runcmd(bcmd->cmd); // 只執行一層！不再 fork
-      } else {
+        runcmd(bcmd->cmd);
+      } else{
+        // Foreground
         runcmd(c);
       }
       exit(0);
     }
 
+    // For parent
     if(is_bg){
-      add_job(pid);
       printf("[%d]\n", pid);
-      // parent立即回 prompt，不 wait
-    } else {
-      wait(0);
-      // 前景命令，待child完成
-    }
+      jobs[pid] = 1;
+    } else wait(0);
   }
-
   exit(0);
 }
-
 
 void
 panic(char *s)
