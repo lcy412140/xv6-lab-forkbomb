@@ -141,8 +141,38 @@ getcmd(char *buf, int nbuf)
   return 0;
 }
 
+void
+run_isbg(char* buf){
+  struct cmd *cmd = parsecmd(buf);
+  int is_bg = (cmd->type == BACK), pid = fork1(); // Only fork once.
+  
+  // For child process.
+  if(pid==0){ 
+    if(is_bg){
+      // Background command.
+      struct backcmd* bcmd = (struct backcmd*)cmd;
+      runcmd(bcmd->cmd);
+    } else{
+      // Foreground
+      runcmd(cmd);
+    }
+    exit(0);
+  }
+
+  if(is_bg) printf("[%d]\n", pid);
+  else wait(0);
+}
+
+void reap_zombies(){
+  int pid, status;
+  while ((pid = wait_noblock((uint64)&status)) > 0){
+    printf("[bg %d] exited with status %d\n", pid, status);
+    jobs[pid] = 0;
+  }
+}
+
 int
-main(void)
+main(int argc, char* argv[])
 {
   static char buf[100];
   int fd;
@@ -155,21 +185,44 @@ main(void)
     }
   }
 
-  // Reap background zonmbie processes (BEFORE).
-  int pid, status;
-  while ((pid = wait_noblock((uint64)&status)) > 0){
-    printf("[bg %d] exited with status %d\n", pid, status);
-    jobs[pid] = 0;
+  // Reap background zombie processes (BEFORE).
+  reap_zombies();
+
+  if(argc>1){
+    fd = open(argv[1], O_RDONLY);
+    if(fd < 0){
+        fprintf(2, "sh: cannot open %s\n", argv[1]);
+        exit(1);
+    }
+
+    int i = 0;
+    char c;
+    while(read(fd, &c, 1) == 1){
+      reap_zombies();
+      if(c=='\n' || i>=sizeof(buf)-1){
+        buf[i] = 0;
+        // Run command.
+        if(buf[0]) run_isbg(buf);
+        i = 0;
+      } else{
+        buf[i++] = c;
+      }
+    }
+
+    // If the last line does not end with \n.
+    buf[i] = 0;
+    if(i>0 && buf[0]) run_isbg(buf);
+    
+    close(fd);
+    reap_zombies();
+    exit(0);
   }
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
 
     // Reap again (AFTER).
-    while ((pid = wait_noblock((uint64)&status)) > 0){
-      printf("[bg %d] exited with status %d\n", pid, status);
-      jobs[pid] = 0;
-    }
+    reap_zombies();
 
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
       // Chdir must be called by the parent, not the child.
@@ -184,28 +237,8 @@ main(void)
       continue;
     }
 
-    struct cmd* c = parsecmd(buf);
-    int is_bg = (c->type == BACK);
-    pid = fork1(); // Only fork in main once.
-    
-    // For child process.
-    if(pid==0){ 
-      if(is_bg){
-        // Background command.
-        struct backcmd* bcmd = (struct backcmd*)c;
-        runcmd(bcmd->cmd);
-      } else{
-        // Foreground
-        runcmd(c);
-      }
-      exit(0);
-    }
+    run_isbg(buf);
 
-    // For parent
-    if(is_bg){
-      printf("[%d]\n", pid);
-      jobs[pid] = 1;
-    } else wait(0);
   }
   exit(0);
 }
