@@ -94,7 +94,8 @@ runcmd(struct cmd *cmd)
 
   case LIST:
     lcmd = (struct listcmd*)cmd;
-    runcmd(lcmd->left);
+    if(fork1() == 0)
+      runcmd(lcmd->left);
     wait(0);
     runcmd(lcmd->right);
     break;
@@ -103,19 +104,20 @@ runcmd(struct cmd *cmd)
     pcmd = (struct pipecmd*)cmd;
     if(pipe(p) < 0)
       panic("pipe");
-    
-    close(1);
-    dup(p[1]);
-    close(p[0]);
-    close(p[1]);
-    runcmd(pcmd->left);
-    
-    close(0);
-    dup(p[0]);
-    close(p[0]);
-    close(p[1]);
-    runcmd(pcmd->right);
-    
+    if(fork1() == 0){
+      close(1);
+      dup(p[1]);
+      close(p[0]);
+      close(p[1]);
+      runcmd(pcmd->left);
+    }
+    if(fork1() == 0){
+      close(0);
+      dup(p[0]);
+      close(p[0]);
+      close(p[1]);
+      runcmd(pcmd->right);
+    }
     close(p[0]);
     close(p[1]);
     wait(0);
@@ -141,8 +143,17 @@ getcmd(char *buf, int nbuf)
   return 0;
 }
 
+void reap_zombies(){
+  int pid, status;
+  while ((pid = wait_noblock((uint64)&status)) > 0){
+    printf("[bg %d] exited with status %d\n", pid, status);
+    jobs[pid] = 0;
+  }
+}
+
 void
 run_isbg(char* buf){
+
   struct cmd *cmd = parsecmd(buf);
   int is_bg = (cmd->type == BACK), pid = fork1(); // Only fork once.
   
@@ -159,15 +170,11 @@ run_isbg(char* buf){
     exit(0);
   }
 
-  if(is_bg) printf("[%d]\n", pid);
-  else wait(0);
-}
-
-void reap_zombies(){
-  int pid, status;
-  while ((pid = wait_noblock((uint64)&status)) > 0){
-    printf("[bg %d] exited with status %d\n", pid, status);
-    jobs[pid] = 0;
+  if(is_bg){
+    jobs[pid] = 1;
+    printf("[%d]\n", pid);
+  } else{
+    wait(0);
   }
 }
 
@@ -238,7 +245,6 @@ main(int argc, char* argv[])
     }
 
     run_isbg(buf);
-
   }
   exit(0);
 }
