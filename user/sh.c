@@ -14,6 +14,7 @@
 #define MAXARGS 10
 
 int jobs[NPROC] = {0};
+int err = 0;
 
 struct cmd {
   int type;
@@ -56,6 +57,14 @@ void panic(char*);
 struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
 
+void reap_zombies(){
+  int pid, status;
+  while ((pid = wait_noblock((uint64)&status)) > 0){
+    printf("[bg %d] exited with status %d\n", pid, status);
+    jobs[pid] = 0;
+  }
+}
+
 // Execute cmd.  Never returns.
 void
 runcmd(struct cmd *cmd)
@@ -71,64 +80,65 @@ runcmd(struct cmd *cmd)
     exit(1);
 
   switch(cmd->type){
-  default:
-    panic("runcmd");
+    default:
+      panic("runcmd");
 
-  case EXEC:
-    ecmd = (struct execcmd*)cmd;
-    if(ecmd->argv[0] == 0)
-      exit(1);
-    exec(ecmd->argv[0], ecmd->argv);
-    fprintf(2, "exec %s failed\n", ecmd->argv[0]);
-    break;
+    case EXEC:
+      ecmd = (struct execcmd*)cmd;
+      if(ecmd->argv[0] == 0)
+        exit(1);
+      exec(ecmd->argv[0], ecmd->argv);
+      fprintf(2, "exec %s failed\n", ecmd->argv[0]);
+      break;
 
-  case REDIR:
-    rcmd = (struct redircmd*)cmd;
-    close(rcmd->fd);
-    if(open(rcmd->file, rcmd->mode) < 0){
-      fprintf(2, "open %s failed\n", rcmd->file);
-      exit(1);
-    }
-    runcmd(rcmd->cmd);
-    break;
+    case REDIR:
+      rcmd = (struct redircmd*)cmd;
+      close(rcmd->fd);
+      if(open(rcmd->file, rcmd->mode) < 0){
+        fprintf(2, "open %s failed\n", rcmd->file);
+        exit(1);
+      }
+      runcmd(rcmd->cmd);
+      break;
 
-  case LIST:
-    lcmd = (struct listcmd*)cmd;
-    if(fork1() == 0)
-      runcmd(lcmd->left);
-    wait(0);
-    runcmd(lcmd->right);
-    break;
+    case LIST:
+      lcmd = (struct listcmd*)cmd;
+      if(fork1() == 0)
+        runcmd(lcmd->left);
+      wait(0);
+      runcmd(lcmd->right);
+      break;
 
-  case PIPE:
-    pcmd = (struct pipecmd*)cmd;
-    if(pipe(p) < 0)
-      panic("pipe");
-    if(fork1() == 0){
-      close(1);
-      dup(p[1]);
+    case PIPE:
+      pcmd = (struct pipecmd*)cmd;
+      if(pipe(p) < 0)
+        panic("pipe");
+      if(fork1() == 0){
+        close(1);
+        dup(p[1]);
+        close(p[0]);
+        close(p[1]);
+        runcmd(pcmd->left);
+      }
+      if(fork1() == 0){
+        close(0);
+        dup(p[0]);
+        close(p[0]);
+        close(p[1]);
+        runcmd(pcmd->right);
+      }
       close(p[0]);
       close(p[1]);
-      runcmd(pcmd->left);
-    }
-    if(fork1() == 0){
-      close(0);
-      dup(p[0]);
-      close(p[0]);
-      close(p[1]);
-      runcmd(pcmd->right);
-    }
-    close(p[0]);
-    close(p[1]);
-    wait(0);
-    wait(0);
-    break;
+      wait(0);
+      wait(0);
+      break;
 
-  case BACK:
-    bcmd = (struct backcmd*)cmd;
-    runcmd(bcmd->cmd);
-    break;
+    case BACK:
+      bcmd = (struct backcmd*)cmd;
+      runcmd(bcmd->cmd);
+      break;
   }
+
   exit(0);
 }
 
@@ -141,14 +151,6 @@ getcmd(char *buf, int nbuf)
   if(buf[0] == 0) // EOF
     return -1;
   return 0;
-}
-
-void reap_zombies(){
-  int pid, status;
-  while ((pid = wait_noblock((uint64)&status)) > 0){
-    printf("[bg %d] exited with status %d\n", pid, status);
-    jobs[pid] = 0;
-  }
 }
 
 void
@@ -192,9 +194,6 @@ main(int argc, char* argv[])
     }
   }
 
-  // Reap background zombie processes (BEFORE).
-  reap_zombies();
-
   if(argc>1){
     fd = open(argv[1], O_RDONLY);
     if(fd < 0){
@@ -205,7 +204,6 @@ main(int argc, char* argv[])
     int i = 0;
     char c;
     while(read(fd, &c, 1) == 1){
-      reap_zombies();
       if(c=='\n' || i>=sizeof(buf)-1){
         buf[i] = 0;
         // Run command.
@@ -221,14 +219,13 @@ main(int argc, char* argv[])
     if(i>0 && buf[0]) run_isbg(buf);
     
     close(fd);
-    reap_zombies();
     exit(0);
   }
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
 
-    // Reap again (AFTER).
+    // Reap after getcmd().
     reap_zombies();
 
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
@@ -245,6 +242,8 @@ main(int argc, char* argv[])
     }
 
     run_isbg(buf);
+    sleep(1);
+    reap_zombies();
   }
   exit(0);
 }
