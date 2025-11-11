@@ -60,8 +60,10 @@ void runcmd(struct cmd*) __attribute__((noreturn));
 void reap_zombies(){
   int pid, status;
   while ((pid = wait_noblock((uint64)&status)) > 0){
-    printf("[bg %d] exited with status %d\n", pid, status);
-    jobs[pid] = 0;
+    if (jobs[pid]) {
+      printf("[bg %d] exited with status %d\n", pid, status);
+      jobs[pid] = 0;
+    }
   }
 }
 
@@ -176,8 +178,39 @@ run_isbg(char* buf){
     jobs[pid] = 1;
     printf("[%d]\n", pid);
   } else{
-    wait(0);
+    int wpid, status;
+
+    while((wpid = wait(&status))>0){
+      if(wpid!=pid && jobs[wpid]){
+        printf("[bg %d] exited with status %d\n", wpid, status);
+        jobs[wpid] = 0;
+      }
+      if(wpid==pid) break;
+    }
   }
+}
+
+void
+handle_cmd(char* buf){
+  if(!buf[0]) return;
+
+  reap_zombies();
+
+  if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+    // Chdir must be called by the parent, not the child.
+    buf[strlen(buf)-1] = 0;  // chop \n
+    if(chdir(buf+3) < 0)
+      fprintf(2, "cannot cd %s\n", buf+3);
+    return;
+  } else if(buf[0] == 'j' && buf[1] == 'o' && buf[2] == 'b' && buf[3] == 's' && (buf[4] == '\n' || buf[4] == 0)){
+    for(int i=0;i<NPROC;i++){
+      if(jobs[i]) printf("%d\n", i);
+    }
+    return;
+  }
+  run_isbg(buf);
+  sleep(1);
+  reap_zombies();
 }
 
 int
@@ -207,7 +240,7 @@ main(int argc, char* argv[])
       if(c=='\n' || i>=sizeof(buf)-1){
         buf[i] = 0;
         // Run command.
-        if(buf[0]) run_isbg(buf);
+        handle_cmd(buf);
         i = 0;
       } else{
         buf[i++] = c;
@@ -216,7 +249,7 @@ main(int argc, char* argv[])
 
     // If the last line does not end with \n.
     buf[i] = 0;
-    if(i>0 && buf[0]) run_isbg(buf);
+    if(i>0) handle_cmd(buf);
     
     close(fd);
     exit(0);
@@ -224,26 +257,7 @@ main(int argc, char* argv[])
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
-
-    // Reap after getcmd().
-    reap_zombies();
-
-    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      buf[strlen(buf)-1] = 0;  // chop \n
-      if(chdir(buf+3) < 0)
-        fprintf(2, "cannot cd %s\n", buf+3);
-      continue;
-    } else if(buf[0] == 'j' && buf[1] == 'o' && buf[2] == 'b' && buf[3] == 's' && (buf[4] == '\n' || buf[4] == 0)){
-      for(int i=0;i<NPROC;i++){
-        if(jobs[i]) printf("%d\n", i);
-      }
-      continue;
-    }
-
-    run_isbg(buf);
-    sleep(1);
-    reap_zombies();
+    handle_cmd(buf);
   }
   exit(0);
 }
