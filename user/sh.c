@@ -202,7 +202,7 @@ handle_cmd(char* buf){
     if(chdir(buf+3) < 0)
       fprintf(2, "cannot cd %s\n", buf+3);
     return;
-  } else if(buf[0] == 'j' && buf[1] == 'o' && buf[2] == 'b' && buf[3] == 's' && (buf[4] == '\n' || buf[4] == 0)){
+  } else if(buf[0] == 'j' && buf[1] == 'o' && buf[2] == 'b' && buf[3] == 's' && (buf[4] == '\n' || buf[4] == 0 || buf[4]== ' ')){
     for(int i=0;i<NPROC;i++){
       if(jobs[i]) printf("%d\n", i);
     }
